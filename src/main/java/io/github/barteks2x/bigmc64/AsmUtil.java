@@ -345,5 +345,30 @@ public class AsmUtil {
             default -> throw new IllegalArgumentException("Illegal opcode: " + opcode);
         };
     }
+
+    public static int intToLongOpcode(int opcode) {
+        return switch(opcode) {
+            case IADD -> LADD;
+            case ISUB -> LSUB;
+            case IMUL -> LMUL;
+            case IDIV -> LDIV;
+            case IREM -> LREM;
+            case ISHL -> LSHL;
+            case ISHR -> LSHR;
+            case IUSHR -> LUSHR;
+            case IAND -> LAND;
+            case IOR -> LOR;
+            case IXOR -> LXOR;
+            case INEG -> LNEG;
+            case I2L -> NOP;
+            case ISTORE -> LSTORE;
+            case ILOAD -> LLOAD;
+            case IRETURN -> LRETURN;
+            case IALOAD -> LALOAD;
+            case IASTORE -> LASTORE;
+            case IINC -> throw new IllegalArgumentException("Cannot convert iinc");
+            default -> throw new IllegalArgumentException("Cannot convert " + opcodeToString(opcode) + " to long operation");
+        };
+    }
 }
 
