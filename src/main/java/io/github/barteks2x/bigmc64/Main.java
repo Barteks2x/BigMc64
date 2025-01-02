@@ -1,5 +1,8 @@
 package io.github.barteks2x.bigmc64;
 
+import static io.github.barteks2x.bigmc64.Main.InferredTypeTag.COORD;
+import static io.github.barteks2x.bigmc64.Main.InferredTypeTag.NONE;
+
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
@@ -11,7 +14,6 @@ import org.objectweb.asm.tree.IincInsnNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.IntInsnNode;
-import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LdcInsnNode;
 import org.objectweb.asm.tree.LocalVariableNode;
 import org.objectweb.asm.tree.MethodInsnNode;
@@ -36,18 +38,27 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 
 public class Main {
 
     public static void main(String[] args) throws IOException, AnalyzerException {
+        JarTagIndex index = new JarTagIndex();
+        Type testExampleType = Type.getType("Lio/github/barteks2x/bigmc64/TestExample;");
+        MethodRef testMethodRef = new MethodRef(testExampleType, false, "test", Type.VOID_TYPE,
+                Type.INT_TYPE, Type.INT_TYPE, Type.INT_TYPE, Type.INT_TYPE);
+        TaggedClassInfo testExampleTags = new TaggedClassInfo(testExampleType);
+        testExampleTags.addMethod(testMethodRef, new MethodTags(NONE, COORD, COORD, COORD, NONE));
+        index.addClass(testExampleType, testExampleTags);
+
         Path classFile = Paths.get("build/classes/java/main/io/github/barteks2x/bigmc64/TestExample.class");
         ClassNode cn = new ClassNode(Opcodes.ASM9);
         ClassReader cr = new ClassReader(Files.readAllBytes(classFile));
         cr.accept(cn, 0);
 
-        process(cn);
+        process(index, cn);
 
-        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS | ClassWriter.COMPUTE_FRAMES);
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_MAXS);// | ClassWriter.COMPUTE_FRAMES);
         cn.accept(cw);
         byte[] byteArray = cw.toByteArray();
         Files.write(Paths.get("TestExample.class"), byteArray);
@@ -65,31 +76,17 @@ public class Main {
         }
     }
 
-    private static void process(ClassNode cn) throws AnalyzerException {
-        MethodRef test = new MethodRef(Type.getObjectType("io/github/barteks2x/bigmc64/TestExample"), "test", Type.VOID_TYPE,
-                new Type[]{Type.INT_TYPE, Type.INT_TYPE, Type.INT_TYPE, Type.INT_TYPE});
-        // -1 is return?
-        Map<MethodRef, List<Integer>> taggedCoordLocals = new HashMap<>();
-        ArrayList<Integer> taggedVars = new ArrayList<>(); // negative = insn
-        taggedVars.add(0);
-        taggedVars.add(1);
-        taggedVars.add(2);
-        taggedCoordLocals.put(test, taggedVars);
-
+    private static void process(JarTagIndex index, ClassNode cn) throws AnalyzerException {
         List<MethodNode> methods = cn.methods;
         for (int i = 0; i < methods.size(); i++) {
             MethodNode method = methods.get(i);
-            if (method.name.equals(test.name) &&
-                    Type.getReturnType(method.desc).equals(test.returnType) &&
-                    Arrays.equals(Type.getArgumentTypes(method.desc), test.args)) {
-                Frame<TaggedValue>[] taggedFrames = inferTaggedValues(cn.name, method, taggedVars);
-                MethodNode output = transformToLongs(method, taggedFrames);
-                cn.methods.set(i, output);
-            }
+            Frame<TaggedValue>[] taggedFrames = inferTaggedValues(cn.name, method, index);
+            MethodNode output = transformToLongs(index, method, taggedFrames);
+            cn.methods.set(i, output);
         }
     }
 
-    private static MethodNode transformToLongs(MethodNode method, Frame<TaggedValue>[] taggedFrames) {
+    private static MethodNode transformToLongs(JarTagIndex index, MethodNode method, Frame<TaggedValue>[] taggedFrames) {
         MethodNode newNode = new MethodNode(Opcodes.ASM9, method.name, transformDescriptor(taggedFrames, method.desc), null,
                 method.exceptions.toArray(String[]::new));
         newNode.access = method.access;
@@ -111,7 +108,7 @@ public class Main {
                     recomputeLocalIndex(localVariable.index, frame0));
             newNode.localVariables.add(newLocal);
         }
-        transformInsns(method.instructions, newNode.instructions, taggedFrames);
+        transformInsns(index, method.instructions, newNode.instructions, taggedFrames);
         return newNode;
     }
 
@@ -139,125 +136,7 @@ public class Main {
         return sb.toString();
     }
 
-    private static void transformInsns(InsnList oldInsns, InsnList newInsns, Frame<TaggedValue>[] frames) {
-        // public static test(IIII)V
-        //   L0
-        //    LINENUMBER 6 L0
-        //    ICONST_M1
-        //    ISTORE 4
-        //   L1
-        //   FRAME APPEND [I]
-        //    ILOAD 4
-        //    ICONST_1
-        //    IF_ICMPGT L2
-        //   L3
-        //    LINENUMBER 7 L3
-        //    ICONST_M1
-        //    ISTORE 5
-        //   L4
-        //   FRAME APPEND [I]
-        //    ILOAD 5
-        //    ICONST_1
-        //    IF_ICMPGT L5
-        //   L6
-        //    LINENUMBER 8 L6
-        //    ICONST_M1
-        //    ISTORE 6
-        //   L7
-        //   FRAME APPEND [I]
-        //    ILOAD 6
-        //    ICONST_1
-        //    IF_ICMPGT L8
-        //   L9
-        //    LINENUMBER 9 L9
-        //    ICONST_0
-        //    ISTORE 7
-        //   L10
-        //   FRAME APPEND [I]
-        //    ILOAD 7
-        //    ILOAD 3
-        //    IF_ICMPGE L11
-        //   L12
-        //    LINENUMBER 10 L12
-        //    ILOAD 0
-        //    ILOAD 4
-        //    IADD
-        //    ISTORE 8
-        //   L13
-        //    LINENUMBER 11 L13
-        //    ILOAD 1
-        //    ILOAD 5
-        //    ILOAD 3
-        //    IMUL
-        //    IADD
-        //    ISTORE 9
-        //   L14
-        //    LINENUMBER 12 L14
-        //    ILOAD 2
-        //    ILOAD 6
-        //    IADD
-        //    ISTORE 10
-        //   L15
-        //    LINENUMBER 13 L15
-        //    GETSTATIC java/lang/System.out : Ljava/io/PrintStream;
-        //    LDC "HELLO %d %d %d\n"
-        //    ICONST_3
-        //    ANEWARRAY java/lang/Object
-        //    DUP
-        //    ICONST_0
-        //    ILOAD 8
-        //    INVOKESTATIC java/lang/Integer.valueOf (I)Ljava/lang/Integer;
-        //    AASTORE
-        //    DUP
-        //    ICONST_1
-        //    ILOAD 9
-        //    INVOKESTATIC java/lang/Integer.valueOf (I)Ljava/lang/Integer;
-        //    AASTORE
-        //    DUP
-        //    ICONST_2
-        //    ILOAD 10
-        //    INVOKESTATIC java/lang/Integer.valueOf (I)Ljava/lang/Integer;
-        //    AASTORE
-        //    INVOKEVIRTUAL java/io/PrintStream.printf (Ljava/lang/String;[Ljava/lang/Object;)Ljava/io/PrintStream;
-        //    POP
-        //   L16
-        //    LINENUMBER 9 L16
-        //    IINC 7 1
-        //    GOTO L10
-        //   L11
-        //    LINENUMBER 8 L11
-        //   FRAME CHOP 1
-        //    IINC 6 1
-        //    GOTO L7
-        //   L8
-        //    LINENUMBER 7 L8
-        //   FRAME CHOP 1
-        //    IINC 5 1
-        //    GOTO L4
-        //   L5
-        //    LINENUMBER 6 L5
-        //   FRAME CHOP 1
-        //    IINC 4 1
-        //    GOTO L1
-        //   L2
-        //    LINENUMBER 18 L2
-        //   FRAME CHOP 1
-        //    RETURN
-        //   L17
-        //    LOCALVARIABLE xx I L13 L16 8
-        //    LOCALVARIABLE yy I L14 L16 9
-        //    LOCALVARIABLE zz I L15 L16 10
-        //    LOCALVARIABLE i I L10 L11 7
-        //    LOCALVARIABLE dz I L7 L8 6
-        //    LOCALVARIABLE dy I L4 L5 5
-        //    LOCALVARIABLE dx I L1 L2 4
-        //    LOCALVARIABLE x I L0 L17 0
-        //    LOCALVARIABLE y I L0 L17 1
-        //    LOCALVARIABLE z I L0 L17 2
-        //    LOCALVARIABLE value I L0 L17 3
-        //    MAXSTACK = 6
-        //    MAXLOCALS = 11
-        //}
+    private static void transformInsns(JarTagIndex index, InsnList oldInsns, InsnList newInsns, Frame<TaggedValue>[] frames) {
         AbstractInsnNode insn = oldInsns.getFirst();
         for (int i = 0; i < oldInsns.size(); i++, insn = insn.getNext()) {
             Frame<TaggedValue> frame = frames[i];
@@ -269,7 +148,8 @@ public class Main {
                 case Opcodes.ICONST_M1, Opcodes.ICONST_0, Opcodes.ICONST_1, Opcodes.ICONST_2, Opcodes.ICONST_3, Opcodes.ICONST_4, Opcodes.ICONST_5,
                      Opcodes.LCONST_0, Opcodes.LCONST_1,
                      Opcodes.FCONST_0, Opcodes.FCONST_1, Opcodes.FCONST_2,
-                     Opcodes.DCONST_0, Opcodes.DCONST_1  -> newInsns.add(insn);
+                     Opcodes.DCONST_0, Opcodes.DCONST_1,
+                     Opcodes.BIPUSH -> newInsns.add(insn);
                 case Opcodes.ISTORE, Opcodes.ILOAD -> {
                     int oldLocal = ((VarInsnNode) insn).var;
                     int newLocal = recomputeLocalIndex(oldLocal, frame);
@@ -278,6 +158,11 @@ public class Main {
                     } else {
                         newInsns.add(new VarInsnNode(opcode, newLocal));
                     }
+                }
+                case Opcodes.ASTORE, Opcodes.ALOAD -> {
+                    int oldLocal = ((VarInsnNode) insn).var;
+                    int newLocal = recomputeLocalIndex(oldLocal, frame);
+                    newInsns.add(new VarInsnNode(opcode, newLocal));
                 }
                 case Opcodes.IF_ICMPGT, Opcodes.IF_ICMPGE -> {
                     if (frame.getStack(frame.getStackSize() - 1).isCoord()) {
@@ -346,12 +231,27 @@ public class Main {
                             && call.desc.equals("(I)Ljava/lang/Integer;") && frame.getStack(frame.getStackSize() - 1).isCoord()) {
                         newInsns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, "java/lang/Long", "valueOf", "(J)Ljava/lang/Long;"));
                     } else {
-                        System.out.println("TODO: INVOKESTATIC");
-                        newInsns.add(insn);
+                        Type returnType = Type.getReturnType(call.desc);
+                        Type[] argumentTypes = Type.getArgumentTypes(call.desc);
+                        MethodRef ref = new MethodRef(Type.getObjectType(call.owner), false, call.name,
+                                returnType, argumentTypes);
+                        MethodTags tags = index.getClassTags(ref.owner()).getMethod(ref);
+                        if (tags.inferredReturn == COORD) {
+                            assert returnType == Type.INT_TYPE;
+                            returnType = Type.LONG_TYPE;
+                        }
+                        for (int j = 0; j < tags.inferredArgs.length; j++) {
+                            if (tags.inferredArgs[j] == COORD) {
+                                assert argumentTypes[j] == Type.INT_TYPE;
+                                argumentTypes[j] = Type.LONG_TYPE;
+                            }
+                        }
+                        newInsns.add(new MethodInsnNode(Opcodes.INVOKESTATIC, call.owner, call.name,
+                                Type.getMethodDescriptor(returnType, argumentTypes)));
                     }
                 }
-                case Opcodes.INVOKEVIRTUAL -> {
-                    System.out.println("TODO: INVOKEVIRTUAL");
+                case Opcodes.INVOKEVIRTUAL, Opcodes.INVOKESPECIAL -> {
+                    System.out.println("TODO: " + AsmUtil.opcodeToString(opcode));
                     newInsns.add(insn);
                 }
                 case Opcodes.LDC -> {
@@ -390,11 +290,13 @@ public class Main {
         return j;
     }
 
-    private static Frame<TaggedValue>[] inferTaggedValues(String owner, MethodNode method, ArrayList<Integer> taggedVarsInsns)
+    private static Frame<TaggedValue>[] inferTaggedValues(String ownerInternalName, MethodNode method, JarTagIndex index)
             throws AnalyzerException {
-        CoordTaggingInterpreter interpreter = new CoordTaggingInterpreter(taggedVarsInsns);
+        CoordTaggingInterpreter interpreter = new CoordTaggingInterpreter(index, new MethodRef(Type.getObjectType(ownerInternalName),
+                (method.access & Opcodes.ACC_STATIC) == 0,
+                method.name, Type.getReturnType(method.desc), Type.getArgumentTypes(method.desc)));
         Analyzer<TaggedValue> analyzer = new Analyzer<>(interpreter);
-        Frame<TaggedValue>[] frame = analyzer.analyze(owner, method);
+        Frame<TaggedValue>[] frame = analyzer.analyze(ownerInternalName, method);
         return frame;
     }
 
@@ -406,18 +308,23 @@ public class Main {
 
         private static final TaggedValue UNINITIALIZED_VALUE = new TaggedValue(null, null, false);
 
-        private final List<Integer> taggedVarsInsns;
+        private final JarTagIndex index;
+        private final MethodRef thisMethodRef;
 
         private final List<TaggedValue> locals = new ArrayList<>();
+        private final MethodTags thisMethodTags;
 
         /**
          * Creates new CoordTaggingInterpreter with initial set of tagged variables
          *
-         * @param taggedVarsInsns - initial set of tagged variables
+         * @param index - initial set of tagged variables
          */
-        protected CoordTaggingInterpreter(List<Integer> taggedVarsInsns) {
+        protected CoordTaggingInterpreter(JarTagIndex index, MethodRef thisMethod) {
             super(Opcodes.ASM9);
-            this.taggedVarsInsns = taggedVarsInsns;
+            System.out.println("Making interpreter for " + thisMethod);
+            this.index = index;
+            this.thisMethodRef = thisMethod;
+            this.thisMethodTags = index.getClassTags(thisMethod.owner()).getMethod(thisMethodRef);
         }
 
         @Override public TaggedValue newValue(Type type) {
@@ -426,7 +333,7 @@ public class Main {
         }
 
         public TaggedValue newParameterValue(final boolean isInstanceMethod, final int local, final Type type) {
-            TaggedValue coordTaggedValue = new TaggedValue(type, local, taggedVarsInsns.contains(local));
+            TaggedValue coordTaggedValue = new TaggedValue(type, local, thisMethodTags.inferredArgs[local] == COORD);
             locals.add(coordTaggedValue);
             return coordTaggedValue;
         }
@@ -438,7 +345,7 @@ public class Main {
             if (type == Type.VOID_TYPE) {
                 return null;
             }
-            return new TaggedValue(type, -1, taggedVarsInsns.contains(-1));
+            return new TaggedValue(type, -1, thisMethodTags.inferredReturn == COORD);
         }
 
         public TaggedValue newEmptyValue(final int local) {
@@ -449,7 +356,7 @@ public class Main {
                 final TryCatchBlockNode tryCatchBlockNode,
                 final Frame<TaggedValue> handlerFrame,
                 final Type exceptionType) {
-            return new TaggedValue(exceptionType, -1, taggedVarsInsns.contains(-1));
+            return new TaggedValue(exceptionType, -1, false);
         }
 
         @Override public TaggedValue newOperation(AbstractInsnNode insn) throws AnalyzerException {
@@ -483,23 +390,23 @@ public class Main {
 
         @Override public TaggedValue copyOperation(AbstractInsnNode insn, TaggedValue value) throws AnalyzerException {
             return switch (insn.getOpcode()) {
-                case Opcodes.ILOAD -> new TaggedValue(Type.INT_TYPE, insn, value.isCoord());
-                case Opcodes.LLOAD -> new TaggedValue(Type.LONG_TYPE, insn, value.isCoord());
-                case Opcodes.FLOAD -> new TaggedValue(Type.FLOAT_TYPE, insn, value.isCoord());
-                case Opcodes.DLOAD -> new TaggedValue(Type.DOUBLE_TYPE, insn, value.isCoord());
-                case Opcodes.ALOAD -> new TaggedValue(value.getType(), insn, value.isCoord());
-                case Opcodes.ISTORE -> new TaggedValue(Type.INT_TYPE, insn, value.isCoord());
-                case Opcodes.LSTORE -> new TaggedValue(Type.LONG_TYPE, insn, value.isCoord());
-                case Opcodes.FSTORE -> new TaggedValue(Type.FLOAT_TYPE, insn, value.isCoord());
-                case Opcodes.DSTORE -> new TaggedValue(Type.DOUBLE_TYPE, insn, value.isCoord());
-                case Opcodes.ASTORE -> new TaggedValue(value.getType(), insn, value.isCoord());
+                case Opcodes.ILOAD -> new TaggedValue(Type.INT_TYPE, insn, value.isCoord(), value);
+                case Opcodes.LLOAD -> new TaggedValue(Type.LONG_TYPE, insn, value.isCoord(), value);
+                case Opcodes.FLOAD -> new TaggedValue(Type.FLOAT_TYPE, insn, value.isCoord(), value);
+                case Opcodes.DLOAD -> new TaggedValue(Type.DOUBLE_TYPE, insn, value.isCoord(), value);
+                case Opcodes.ALOAD -> new TaggedValue(value.getType(), insn, value.isCoord(), value);
+                case Opcodes.ISTORE -> new TaggedValue(Type.INT_TYPE, insn, value.isCoord(), value);
+                case Opcodes.LSTORE -> new TaggedValue(Type.LONG_TYPE, insn, value.isCoord(), value);
+                case Opcodes.FSTORE -> new TaggedValue(Type.FLOAT_TYPE, insn, value.isCoord(), value);
+                case Opcodes.DSTORE -> new TaggedValue(Type.DOUBLE_TYPE, insn, value.isCoord(), value);
+                case Opcodes.ASTORE -> new TaggedValue(value.getType(), insn, value.isCoord(), value);
                 case Opcodes.DUP,
                      Opcodes.DUP_X1,
                      Opcodes.DUP_X2,
                      Opcodes.DUP2,
                      Opcodes.DUP2_X1,
                      Opcodes.DUP2_X2,
-                     Opcodes.SWAP -> new TaggedValue(value.getType(), insn, value.isCoord());
+                     Opcodes.SWAP -> new TaggedValue(value.getType(), insn, value.isCoord(), value);
                 default -> throw new AnalyzerException(insn, "Unsupported opcode: " + AsmUtil.opcodeToString(insn.getOpcode()));
             };
         }
@@ -514,19 +421,19 @@ public class Main {
                      Opcodes.IFLE,
                      Opcodes.TABLESWITCH,
                      Opcodes.LOOKUPSWITCH -> null;
-                case Opcodes.IRETURN -> new TaggedValue(Type.INT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord());
-                case Opcodes.LRETURN -> new TaggedValue(Type.LONG_TYPE, insn, false);
-                case Opcodes.FRETURN -> new TaggedValue(Type.FLOAT_TYPE, insn, false);
-                case Opcodes.DRETURN -> new TaggedValue(Type.DOUBLE_TYPE, insn, false);
-                case Opcodes.ARETURN -> new TaggedValue(value.getType(), insn, false);
+                case Opcodes.IRETURN -> new TaggedValue(Type.INT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord(), value);
+                case Opcodes.LRETURN -> new TaggedValue(Type.LONG_TYPE, insn, false, value);
+                case Opcodes.FRETURN -> new TaggedValue(Type.FLOAT_TYPE, insn, false, value);
+                case Opcodes.DRETURN -> new TaggedValue(Type.DOUBLE_TYPE, insn, false, value);
+                case Opcodes.ARETURN -> new TaggedValue(value.getType(), insn, false, value);
                 case Opcodes.PUTSTATIC -> null;
-                case Opcodes.GETFIELD -> new TaggedValue(Type.getType(((FieldInsnNode) insn).desc), insn, value.isCoord());
-                case Opcodes.NEWARRAY -> new TaggedValue(AsmUtil.arrayTypeFromOperand(((IntInsnNode) insn).operand), insn, value.isCoord());
-                case Opcodes.ANEWARRAY -> new TaggedValue(Type.getObjectType(((TypeInsnNode) insn).desc), insn, value.isCoord());
-                case Opcodes.ARRAYLENGTH -> new TaggedValue(Type.INT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord());
-                case Opcodes.ATHROW -> new TaggedValue(value.getType(), insn, false);
-                case Opcodes.CHECKCAST -> new TaggedValue(Type.getObjectType(((TypeInsnNode) insn).desc), insn, value.isCoord());
-                case Opcodes.INSTANCEOF -> new TaggedValue(Type.BOOLEAN_TYPE, insn, false);
+                case Opcodes.GETFIELD -> new TaggedValue(Type.getType(((FieldInsnNode) insn).desc), insn, value.isCoord(), value);
+                case Opcodes.NEWARRAY -> new TaggedValue(AsmUtil.arrayTypeFromOperand(((IntInsnNode) insn).operand), insn, value.isCoord(), value);
+                case Opcodes.ANEWARRAY -> new TaggedValue(Type.getObjectType(((TypeInsnNode) insn).desc), insn, value.isCoord(), value);
+                case Opcodes.ARRAYLENGTH -> new TaggedValue(Type.INT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord(), value);
+                case Opcodes.ATHROW -> new TaggedValue(value.getType(), insn, false, value);
+                case Opcodes.CHECKCAST -> new TaggedValue(Type.getObjectType(((TypeInsnNode) insn).desc), insn, value.isCoord(), value);
+                case Opcodes.INSTANCEOF -> new TaggedValue(Type.BOOLEAN_TYPE, insn, false, value);
                 case Opcodes.MONITORENTER,
                      Opcodes.MONITOREXIT,
                      Opcodes.IFNULL,
@@ -534,23 +441,23 @@ public class Main {
                 case Opcodes.INEG,
                      Opcodes.LNEG,
                      Opcodes.FNEG,
-                     Opcodes.DNEG -> new TaggedValue(value.getType(), insn, value.isCoord());
-                case Opcodes.IINC -> new TaggedValue(value.getType(), insn, value.isCoord());
-                case Opcodes.I2L -> new TaggedValue(Type.LONG_TYPE, insn, false);
-                case Opcodes.I2F -> new TaggedValue(Type.FLOAT_TYPE, insn, false);
-                case Opcodes.I2D -> new TaggedValue(Type.DOUBLE_TYPE, insn, false);
-                case Opcodes.L2I -> new TaggedValue(Type.INT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord());
-                case Opcodes.L2F -> new TaggedValue(Type.FLOAT_TYPE, insn, false);
-                case Opcodes.L2D -> new TaggedValue(Type.DOUBLE_TYPE, insn, false);
-                case Opcodes.F2I -> new TaggedValue(Type.INT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord());
-                case Opcodes.F2L -> new TaggedValue(Type.LONG_TYPE, insn, false);
-                case Opcodes.F2D -> new TaggedValue(Type.DOUBLE_TYPE, insn, false);
-                case Opcodes.D2I -> new TaggedValue(Type.INT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord());
-                case Opcodes.D2L -> new TaggedValue(Type.LONG_TYPE, insn, false);
-                case Opcodes.D2F -> new TaggedValue(Type.FLOAT_TYPE, insn, false);
-                case Opcodes.I2B -> new TaggedValue(Type.BYTE_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord());
-                case Opcodes.I2C -> new TaggedValue(Type.CHAR_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord());
-                case Opcodes.I2S -> new TaggedValue(Type.SHORT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord());
+                     Opcodes.DNEG -> new TaggedValue(value.getType(), insn, value.isCoord(), value);
+                case Opcodes.IINC -> new TaggedValue(value.getType(), insn, value.isCoord(), value);
+                case Opcodes.I2L -> new TaggedValue(Type.LONG_TYPE, insn, false, value);
+                case Opcodes.I2F -> new TaggedValue(Type.FLOAT_TYPE, insn, false, value);
+                case Opcodes.I2D -> new TaggedValue(Type.DOUBLE_TYPE, insn, false, value);
+                case Opcodes.L2I -> new TaggedValue(Type.INT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord(), value);
+                case Opcodes.L2F -> new TaggedValue(Type.FLOAT_TYPE, insn, false, value);
+                case Opcodes.L2D -> new TaggedValue(Type.DOUBLE_TYPE, insn, false, value);
+                case Opcodes.F2I -> new TaggedValue(Type.INT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord(), value);
+                case Opcodes.F2L -> new TaggedValue(Type.LONG_TYPE, insn, false, value);
+                case Opcodes.F2D -> new TaggedValue(Type.DOUBLE_TYPE, insn, false, value);
+                case Opcodes.D2I -> new TaggedValue(Type.INT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord(), value);
+                case Opcodes.D2L -> new TaggedValue(Type.LONG_TYPE, insn, false, value);
+                case Opcodes.D2F -> new TaggedValue(Type.FLOAT_TYPE, insn, false, value);
+                case Opcodes.I2B -> new TaggedValue(Type.BYTE_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord(), value);
+                case Opcodes.I2C -> new TaggedValue(Type.CHAR_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord(), value);
+                case Opcodes.I2S -> new TaggedValue(Type.SHORT_TYPE, insn, value.getType() == Type.INT_TYPE && value.isCoord(), value);
                 default -> throw new AnalyzerException(insn, "Unsupported opcode: " + AsmUtil.opcodeToString(insn.getOpcode()));
             };
         }
@@ -565,7 +472,7 @@ public class Main {
                      Opcodes.AALOAD,
                      Opcodes.BALOAD,
                      Opcodes.CALOAD,
-                     Opcodes.SALOAD -> new TaggedValue(Type.getObjectType(((TypeInsnNode) insn).desc), insn, value1.isCoord()); // value1 = array
+                     Opcodes.SALOAD -> new TaggedValue(Type.getObjectType(((TypeInsnNode) insn).desc), insn, value1.isCoord(), value1, value2); // value1 = array
                 case Opcodes.IADD,
                      Opcodes.ISUB,
                      Opcodes.IMUL,
@@ -576,7 +483,7 @@ public class Main {
                      Opcodes.IXOR,
                      Opcodes.ISHL,
                      Opcodes.ISHR,
-                     Opcodes.IUSHR -> new TaggedValue(Type.INT_TYPE, insn, value1.isCoord() || value2.isCoord());
+                     Opcodes.IUSHR -> new TaggedValue(Type.INT_TYPE, insn, value1.isCoord() || value2.isCoord(), value1, value2);
                 case Opcodes.LADD,
                      Opcodes.LSUB,
                      Opcodes.LMUL,
@@ -587,22 +494,22 @@ public class Main {
                      Opcodes.LXOR,
                      Opcodes.LSHL,
                      Opcodes.LSHR,
-                     Opcodes.LUSHR -> new TaggedValue(Type.LONG_TYPE, insn, false);
+                     Opcodes.LUSHR -> new TaggedValue(Type.LONG_TYPE, insn, false, value1, value2);
                 case Opcodes.FADD,
                      Opcodes.FSUB,
                      Opcodes.FMUL,
                      Opcodes.FDIV,
-                     Opcodes.FREM -> new TaggedValue(Type.FLOAT_TYPE, insn, false);
+                     Opcodes.FREM -> new TaggedValue(Type.FLOAT_TYPE, insn, false, value1, value2);
                 case Opcodes.DADD,
                      Opcodes.DSUB,
                      Opcodes.DMUL,
                      Opcodes.DDIV,
-                     Opcodes.DREM -> new TaggedValue(Type.DOUBLE_TYPE, insn, false);
-                case Opcodes.LCMP -> new TaggedValue(Type.INT_TYPE, insn, false);
+                     Opcodes.DREM -> new TaggedValue(Type.DOUBLE_TYPE, insn, false, value1, value2);
+                case Opcodes.LCMP -> new TaggedValue(Type.INT_TYPE, insn, false, value1, value2);
                 case Opcodes.FCMPL,
-                     Opcodes.FCMPG -> new TaggedValue(Type.FLOAT_TYPE, insn, false);
+                     Opcodes.FCMPG -> new TaggedValue(Type.FLOAT_TYPE, insn, false, value1, value2);
                 case Opcodes.DCMPL,
-                     Opcodes.DCMPG -> new TaggedValue(Type.DOUBLE_TYPE, insn, false);
+                     Opcodes.DCMPG -> new TaggedValue(Type.DOUBLE_TYPE, insn, false, value1, value2);
                 case Opcodes.IF_ICMPEQ,
                      Opcodes.IF_ICMPNE,
                      Opcodes.IF_ICMPLT,
@@ -640,7 +547,20 @@ public class Main {
 
         @Override public TaggedValue naryOperation(AbstractInsnNode insn, List<? extends TaggedValue> values) throws AnalyzerException {
             // TODO: method calls
-            return new TaggedValue(Type.getReturnType(((MethodInsnNode) insn).desc), insn, false);
+            MethodInsnNode methodInsn = (MethodInsnNode) insn;
+            MethodRef ref = new MethodRef(Type.getObjectType(methodInsn.owner),
+                    insn.getOpcode() != Opcodes.INVOKESTATIC, methodInsn.name, Type.getReturnType(methodInsn.desc),
+                    Type.getArgumentTypes(methodInsn.desc));
+            MethodTags tags = index.getClassTags(ref.owner()).getMethod(ref);
+            if (tags != null) {
+                for (int i = 0; i < tags.inferredArgs.length; i++) {
+                    if (tags.inferredArgs[i] == COORD) {
+                        values.get(i).setCoordPropagate();
+                    }
+                }
+            }
+            return new TaggedValue(Type.getReturnType(methodInsn.desc), insn, tags != null && tags.inferredReturn == COORD,
+                    values.toArray(TaggedValue[]::new));
         }
 
         @Override public void returnOperation(AbstractInsnNode insn, TaggedValue value, TaggedValue expected) throws AnalyzerException {
@@ -663,19 +583,22 @@ public class Main {
 
     private static class TaggedValue extends BasicValue {
 
+        private final List<TaggedValue> propagateToSources = new ArrayList<>();
         private final Object insnOrLocal;
-        private final boolean isCoord;
+        private boolean isCoord;
 
-        public TaggedValue(Type type, AbstractInsnNode insn, boolean isCoord) {
+        public TaggedValue(Type type, AbstractInsnNode insn, boolean isCoord, TaggedValue... srcs) {
             super(type);
             this.insnOrLocal = insn;
             this.isCoord = isCoord;
+            this.propagateToSources.addAll(Arrays.asList(srcs));
         }
 
-        public TaggedValue(Type type, int local, boolean isCoord) {
+        public TaggedValue(Type type, int local, boolean isCoord, TaggedValue... srcs) {
             super(type);
             this.insnOrLocal = local;
             this.isCoord = isCoord;
+            this.propagateToSources.addAll(Arrays.asList(srcs));
         }
 
         public boolean isInsn() {
@@ -694,6 +617,15 @@ public class Main {
             return isCoord;
         }
 
+        public void setCoordPropagate() {
+            this.isCoord = true;
+            for (TaggedValue src : this.propagateToSources) {
+                if (src.getType() == Type.INT_TYPE) {
+                    src.setCoordPropagate();
+                }
+            }
+        }
+
         @Override
         public String toString() {
             if (this.getType() == null) {
@@ -707,7 +639,36 @@ public class Main {
         }
     }
 
-    private record MethodRef(Type owner, String name, Type returnType, Type[] args) {
+    private record MethodRef(Type owner, boolean isInstance, String name, Type returnType, Type... args) {
+
+        @Override public boolean equals(Object o) {
+            if (this == o) {
+                return true;
+            }
+            if (o == null || getClass() != o.getClass()) {
+                return false;
+            }
+            MethodRef methodRef = (MethodRef) o;
+            return isInstance == methodRef.isInstance && Objects.equals(owner, methodRef.owner) && Objects.equals(name, methodRef.name)
+                    && Arrays.equals(args, methodRef.args) && Objects.equals(returnType, methodRef.returnType);
+        }
+
+        @Override public int hashCode() {
+            return Objects.hash(owner, isInstance, name, returnType, Arrays.hashCode(args));
+        }
+    }
+
+    private record FieldRef(Type owner, String name, Type type) {
+    }
+
+    private static class MethodTags {
+        private final InferredTypeTag inferredReturn;
+        private final InferredTypeTag[] inferredArgs;
+
+        private MethodTags(InferredTypeTag inferredReturn, InferredTypeTag... inferredArgs) {
+            this.inferredReturn = inferredReturn;
+            this.inferredArgs = inferredArgs;
+        }
     }
 
     private record InferredType(InferredTypeTag tag, Type type) {
@@ -715,5 +676,45 @@ public class Main {
 
     enum InferredTypeTag {
         NONE, COORD
+    }
+
+    private static class TaggedClassInfo {
+        private final Type type;
+        private final Map<MethodRef, MethodTags> methods = new HashMap<>();
+        private final Map<FieldRef, InferredTypeTag> fields = new HashMap<>();
+
+        public TaggedClassInfo(Type type) {
+            this.type = type;
+        }
+
+        public void addMethod(MethodRef ref, MethodTags tags) {
+            this.methods.put(ref, tags);
+        }
+
+        public MethodTags getMethod(MethodRef ref) {
+            MethodTags methodTags = this.methods.get(ref);
+            if (methodTags == null) {
+                InferredTypeTag[] inferredArgs = new InferredTypeTag[ref.args.length + (ref.isInstance ? 1 : 0)];
+                Arrays.fill(inferredArgs, NONE);
+                this.methods.put(ref, methodTags = new MethodTags(NONE, inferredArgs));
+            }
+            return methodTags;
+        }
+    }
+
+    private static class JarTagIndex {
+        private final Map<Type, TaggedClassInfo> classTags = new HashMap<>();
+
+        public void addClass(Type type, TaggedClassInfo info) {
+            classTags.put(type, info);
+        }
+
+        public TaggedClassInfo getClassTags(Type owner) {
+            TaggedClassInfo taggedClassInfo = classTags.get(owner);
+            if (taggedClassInfo == null) {
+                classTags.put(owner, taggedClassInfo = new TaggedClassInfo(owner));
+            }
+            return taggedClassInfo;
+        }
     }
 }

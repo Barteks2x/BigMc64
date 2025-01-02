@@ -16,4 +16,10 @@ public class TestExample {
             }
         }
     }
+
+    public static void testBackwards(int x, int y, int z) {
+        for (int i = 0; i < 10; i++) {
+            test(x, y, z, i);
+        }
+    }
 }
